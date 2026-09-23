@@ -1,0 +1,29 @@
+schema_version = 1
+
+[llm_clients.ollama]
+format = "openai_chat"
+base_url = "http://ollama:11434/v1"
+
+[llm_clients.nim_chat]
+format = "openai_chat"
+# nim-chat runs on spark-secondary, reached over the direct 200GbE link
+# (192.168.100.2, sub-millisecond) rather than the tailnet (~10-90ms).
+base_url = "http://192.168.100.2:9004/v1"
+
+[targets.llama3_2]
+id = "llama3.2"
+llm_client = "ollama"
+
+[targets.nemotron_nano_8b]
+id = "nvidia/llama-3.1-nemotron-nano-8b-v1"
+llm_client = "nim_chat"
+
+[routes.default]
+id = "ollama-llama3.2"
+type = "passthrough"
+target = "llama3_2"
+
+[routes.nemotron_chat]
+id = "nemotron-chat"
+type = "passthrough"
+target = "nemotron_nano_8b"

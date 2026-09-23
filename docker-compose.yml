@@ -123,6 +123,53 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
 
+  nim-chat:
+    # Deployed only on spark-secondary (its own idle, single-tenant box) —
+    # run with: docker --context spark-secondary compose --profile secondary up -d nim-chat
+    # Never targeted at spark-primary: repeatedly locked up that shared box
+    # (vLLM's memory profiling grabs ~90% of whatever's "free," which starves
+    # the whole machine on GB10's unified-memory architecture when other
+    # tenants are also running there).
+    profiles: ["secondary"]
+    image: nvcr.io/nim/nvidia/llama-3.1-nemotron-nano-8b-v1:1.8.4
+    container_name: nim-chat
+    restart: unless-stopped
+    shm_size: '16gb'
+    environment:
+      - NGC_API_KEY
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Forces the vLLM backend instead of NIM's default TensorRT-LLM pick —
+      # TensorRT-LLM's fused-attention kernel has no compiled variant for
+      # GB10 (sm_121) and hard-crashes; vLLM works on this chip.
+      - NIM_MODEL_PROFILE=4f904d571fe60ff24695b5ee2aa42da58cb460787a968f1e8a09f5a7e862728d
+      # GB10 has unified memory (GPU and OS share the same pool). vLLM's
+      # default gpu_memory_utilization (0.9) claims ~90% of it for KV cache,
+      # starving the OS/sshd/tailscaled — this is what locked up spark-primary
+      # three times. NIM's newer UMA auto-clamp (down to 0.5) doesn't apply to
+      # this older image, so cap it explicitly and conservatively for an 8B model.
+      - NIM_PASSTHROUGH_ARGS=--gpu-memory-utilization 0.3
+    ports:
+      - 9004:8000
+    volumes:
+      - ${NIM_CHAT_CACHE_DIR:-./nim-cache/chat}:/opt/nim/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  switchyard:
+    build:
+      context: ./switchyard
+    container_name: switchyard
+    networks: ['demo']
+    restart: unless-stopped
+    ports:
+      - 127.0.0.1:9005:4000
+
   ollama-cpu:
     profiles: ["cpu"]
     <<: *service-ollama
