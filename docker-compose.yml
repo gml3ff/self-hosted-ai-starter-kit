@@ -20,6 +20,14 @@ x-n8n: &service-n8n
     - N8N_ENCRYPTION_KEY
     - N8N_USER_MANAGEMENT_JWT_SECRET
     - OLLAMA_HOST=${OLLAMA_HOST:-ollama:11434}
+    # Reverse-proxied by `tailscale serve` on the host; these make n8n generate
+    # correct https URLs (webhooks, OAuth callbacks) instead of localhost:5678.
+    - N8N_PROTOCOL=https
+    - N8N_HOST=spark-primary.tail1a15.ts.net
+    - WEBHOOK_URL=https://spark-primary.tail1a15.ts.net/
+    - N8N_PROXY_HOPS=1
+    - N8N_LICENSE_TENANT_ID=${N8N_LICENSE_TENANT_ID}
+    - N8N_LICENSE_ACTIVATION_KEY=${N8N_LICENSE_ACTIVATION_KEY}
   env_file:
     - path: .env
       required: true
@@ -80,7 +88,7 @@ services:
         echo "Workflows exist, skipping import"
       fi
     volumes:
-      - ./n8n/demo-data:/demo-data
+      - ${N8N_DEMO_DATA_DIR:-./n8n/demo-data}:/demo-data
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,11 +99,13 @@ services:
     container_name: n8n
     restart: unless-stopped
     ports:
-      - 5678:5678
+      # Bound to localhost only: reachability over the tailnet comes from
+      # `tailscale serve`, not from exposing this port on the LAN.
+      - 127.0.0.1:5678:5678
     volumes:
       - n8n_storage:/home/node/.n8n
-      - ./n8n/demo-data:/demo-data
-      - ./shared:/data/shared
+      - ${N8N_DEMO_DATA_DIR:-./n8n/demo-data}:/demo-data
+      - ${N8N_SHARED_DIR:-./shared}:/data/shared
     depends_on:
       postgres:
         condition: service_healthy
