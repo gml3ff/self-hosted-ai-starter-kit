@@ -1,0 +1,21 @@
+model_list:
+  - model_name: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+    litellm_params:
+      model: openai/nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+      api_base: http://192.168.100.2:9004/v1
+      api_key: "not-needed"
+
+  - model_name: nvidia/Nemotron-3-Content-Safety
+    litellm_params:
+      model: openai/nvidia/Nemotron-3-Content-Safety
+      api_base: http://192.168.100.2:9006/v1
+      api_key: "not-needed"
+
+  - model_name: nvidia/Nemotron-3-Embed-8B-BF16
+    litellm_params:
+      model: openai/nvidia/Nemotron-3-Embed-8B-BF16
+      api_base: http://192.168.100.2:9007/v1
+      api_key: "not-needed"
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

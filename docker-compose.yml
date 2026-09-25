@@ -1,7 +1,6 @@
 volumes:
   n8n_storage:
   postgres_storage:
-  ollama_storage:
   qdrant_storage:
 
 networks:
@@ -19,7 +18,6 @@ x-n8n: &service-n8n
     - N8N_PERSONALIZATION_ENABLED=false
     - N8N_ENCRYPTION_KEY
     - N8N_USER_MANAGEMENT_JWT_SECRET
-    - OLLAMA_HOST=${OLLAMA_HOST:-ollama:11434}
     # Reverse-proxied by `tailscale serve` on the host; these make n8n generate
     # correct https URLs (webhooks, OAuth callbacks) instead of localhost:5678.
     - N8N_PROTOCOL=https
@@ -31,29 +29,6 @@ x-n8n: &service-n8n
   env_file:
     - path: .env
       required: true
-
-x-ollama: &service-ollama
-  image: ollama/ollama:latest
-  container_name: ollama
-  networks: ['demo']
-  restart: unless-stopped
-  ports:
-    - 11434:11434
-  volumes:
-    - ollama_storage:/root/.ollama
-
-x-init-ollama: &init-ollama
-  image: ollama/ollama:latest
-  networks: ['demo']
-  container_name: ollama-pull-llama
-  volumes:
-    - ollama_storage:/root/.ollama
-  entrypoint: /bin/sh
-  environment:
-    - OLLAMA_HOST=ollama:11434
-  command:
-    - "-c"
-    - "sleep 3; ollama pull llama3.2"
 
 services:
   postgres:
@@ -157,13 +132,26 @@ services:
               count: 1
               capabilities: [gpu]
 
-  ollama-cpu:
-    profiles: ["cpu"]
-    <<: *service-ollama
-
-  ollama-gpu:
-    profiles: ["gpu-nvidia"]
-    <<: *service-ollama
+  vllm-content-safety:
+    # spark-secondary only — see vllm-chat's note above for why.
+    profiles: ["secondary"]
+    image: vllm/vllm-openai:v0.20.0
+    container_name: vllm-content-safety
+    restart: unless-stopped
+    shm_size: '8gb'
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    command:
+      - --model=nvidia/Nemotron-3-Content-Safety
+      - --served-model-name=nvidia/Nemotron-3-Content-Safety
+      # 0.10 wasn't enough: 8.58GB went to weights alone, leaving too little
+      # for the vision-language KV cache — vLLM refused to start (safely).
+      - --gpu-memory-utilization=0.15
+      - --max-model-len=8192
+    ports:
+      - 9006:8000
+    volumes:
+      - ${VLLM_CONTENT_SAFETY_CACHE_DIR:-./vllm-cache/content-safety}:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -172,29 +160,49 @@ services:
               count: 1
               capabilities: [gpu]
 
-  ollama-gpu-amd:
-    profiles: ["gpu-amd"]
-    <<: *service-ollama
-    image: ollama/ollama:rocm
-    devices:
-      - "/dev/kfd"
-      - "/dev/dri"
+  vllm-embed:
+    # spark-secondary only — see vllm-chat's note above for why.
+    profiles: ["secondary"]
+    image: vllm/vllm-openai:v0.20.0
+    container_name: vllm-embed
+    restart: unless-stopped
+    shm_size: '8gb'
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    command:
+      - --model=nvidia/Nemotron-3-Embed-8B-BF16
+      - --served-model-name=nvidia/Nemotron-3-Embed-8B-BF16
+      # No --task flag: this vLLM version rejects it outright, and the model
+      # is already packaged as a sentence-transformers embedding model, so
+      # vLLM should auto-detect its type from the model's own config.
+      - --gpu-memory-utilization=0.15
+      - --max-model-len=8192
+    ports:
+      - 9007:8000
+    volumes:
+      - ${VLLM_EMBED_CACHE_DIR:-./vllm-cache/embed}:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
-  ollama-pull-llama-cpu:
-    profiles: ["cpu"]
-    <<: *init-ollama
-    depends_on:
-      - ollama-cpu
-
-  ollama-pull-llama-gpu:
-    profiles: ["gpu-nvidia"]
-    <<: *init-ollama
-    depends_on:
-      - ollama-gpu
-
-  ollama-pull-llama-gpu-amd:
-    profiles: [gpu-amd]
-    <<: *init-ollama
-    image: ollama/ollama:rocm
-    depends_on:
-     - ollama-gpu-amd
+  litellm:
+    # Unlike Switchyard, LiteLLM supports embeddings, so it can genuinely
+    # front all three vLLM models (chat, embed, and the VLM-based safety
+    # classifier) behind one endpoint. Lightweight/no GPU need, so it runs
+    # on spark-primary alongside n8n rather than spark-secondary.
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    container_name: litellm
+    networks: ['demo']
+    restart: unless-stopped
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+    volumes:
+      - ${LITELLM_CONFIG_PATH:-./litellm-config.yaml}:/app/config.yaml
+    command:
+      - --config=/app/config.yaml
+    ports:
+      - 127.0.0.1:9005:4000
