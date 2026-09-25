@@ -7,7 +7,10 @@ networks:
   demo:
 
 x-n8n: &service-n8n
-  image: n8nio/n8n:latest
+  # Built from ./n8n/Dockerfile: n8nio/n8n:latest plus the n8n-nodes-litellm
+  # community node baked in (see that Dockerfile for how to update the node).
+  build: ./n8n
+  image: n8n-litellm:local
   networks: ['demo']
   environment:
     - DB_TYPE=postgresdb
