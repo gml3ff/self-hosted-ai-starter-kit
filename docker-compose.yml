@@ -30,12 +30,21 @@ x-n8n: &service-n8n
     - N8N_LICENSE_TENANT_ID=${N8N_LICENSE_TENANT_ID}
     - N8N_LICENSE_ACTIVATION_KEY=${N8N_LICENSE_ACTIVATION_KEY}
     - N8N_ENABLED_MODULES=instance-ai
-    - N8N_INSTANCE_AI_MODEL=openai/nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+    # `custom/` pins the OpenAI-compatible chat-completions adapter. The
+    # `openai/` provider probes the endpoint and pinned itself to vLLM's
+    # /v1/responses, whose immature implementation 500s on tool-call items.
+    - N8N_INSTANCE_AI_MODEL=custom/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
     - N8N_INSTANCE_AI_MODEL_URL=http://litellm:4000/v1
     - N8N_INSTANCE_AI_MODEL_API_KEY=${LITELLM_MASTER_KEY}
+    - N8N_INSTANCE_AI_SEARXNG_URL=http://searxng:8080
     - N8N_INSTANCE_AI_SANDBOX_ENABLED=true
     - N8N_INSTANCE_AI_SANDBOX_PROVIDER=daytona
     - N8N_INSTANCE_AI_SANDBOX_IMAGE=daytonaio/sandbox:0.5.3-slim
+    - NODE_FUNCTION_ALLOW_BUILTIN=*
+    # n8n 2.x defaults this to ~/.n8n-files, so Read/Write Files nodes cannot
+    # touch the bind mounts without this allowlist ("Access to the file is not
+    # allowed"). Semicolon-separated; keep it a list rather than disabling.
+    - N8N_RESTRICT_FILE_ACCESS_TO=/data/invoice-uploads;/data/shared
     - DAYTONA_API_URL=https://app.daytona.io/api
     - DAYTONA_API_KEY=${DAYTONA_API_KEY}
   env_file:
@@ -93,6 +102,7 @@ services:
       - n8n_storage:/home/node/.n8n
       - ${N8N_DEMO_DATA_DIR:-./n8n/demo-data}:/demo-data
       - ${N8N_SHARED_DIR:-./shared}:/data/shared
+      - /home/n8n-solutions/invoice-uploads:/data/invoice-uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,12 +136,27 @@ services:
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
     command:
-      - --model=nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+      # Nemotron-3 Nano Omni (31B MoE, ~3B active, NVFP4 ≈ 21GB weights):
+      # replaces the text-only 8B so one model serves both the AI assistant
+      # and vision agent workflows (document images + tool calling together).
+      # NVFP4 is native on this Blackwell (GB10) box.
+      - --model=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
       # Full, exact upstream name+version — this is what n8n's model dropdown
       # will show and what /v1/models reports. Not shortened/aliased.
-      - --served-model-name=nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+      - --served-model-name=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
+      # The repo ships custom loading code (like Nemotron Parse).
+      - --trust-remote-code
       - --gpu-memory-utilization=0.3
+      # Model supports 256k, but KV cache for that would blow the memory
+      # budget shared with the other three models on this box.
       - --max-model-len=32768
+      # Multi-page documents: vLLM's default is 1 image per prompt.
+      - '--limit-mm-per-prompt={"image": 8}'
+      # Tool calling + reasoning parsers per the model card (requires
+      # vLLM >= 0.20, which this image is).
+      - --enable-auto-tool-choice
+      - --tool-call-parser=qwen3_coder
+      - --reasoning-parser=nemotron_v3
     ports:
       - 9004:8000
     volumes:
@@ -200,6 +225,97 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  searxng:
+    # Web search backend for the n8n AI assistant (N8N_INSTANCE_AI_SEARXNG_URL).
+    # searxng/settings.yml must allow the json format or the assistant's
+    # `/search?format=json` calls get a 403. No GPU/API key needed, so it runs
+    # on spark-primary alongside n8n.
+    image: searxng/searxng:latest
+    container_name: searxng
+    hostname: searxng
+    networks: ['demo']
+    restart: unless-stopped
+    environment:
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+      - SEARXNG_BASE_URL=http://searxng:8080/
+    volumes:
+      - ${SEARXNG_CONFIG_DIR:-./searxng}:/etc/searxng
+    ports:
+      # Localhost-only like the other admin UIs; tunnel with
+      # `ssh -N -L 9008:127.0.0.1:9008 n8n-solutions@spark-primary` to inspect.
+      - 127.0.0.1:9008:8080
+
+  vllm-parse:
+    # spark-secondary only — see vllm-chat's note above for why.
+    # Document OCR/parsing (Nemotron Parse): a <1B VLM that takes a document
+    # image via chat completions and returns markdown with layout/bboxes.
+    # Prompt format is fixed tokens, e.g.
+    # "</s><s><predict_bbox><predict_classes><output_markdown><predict_no_text_in_pic>"
+    # with temperature 0 and max_tokens up to 9000.
+    profiles: ["secondary"]
+    # Derived image: stock vLLM + open_clip, which Nemotron Parse's
+    # trust-remote-code modeling file requires (see vllm-parse/Dockerfile).
+    build: ./vllm-parse
+    image: vllm-parse:local
+    container_name: vllm-parse
+    restart: unless-stopped
+    shm_size: '8gb'
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    command:
+      - --model=nvidia/NVIDIA-Nemotron-Parse-v1.2
+      - --served-model-name=nvidia/NVIDIA-Nemotron-Parse-v1.2
+      # Flags from the model card; trust-remote-code is required by the model.
+      - --trust-remote-code
+      - --dtype=bfloat16
+      - --max-num-seqs=8
+      - '--limit-mm-per-prompt={"image": 1}'
+      - --gpu-memory-utilization=0.1
+    ports:
+      - 9009:8000
+    volumes:
+      - ${VLLM_PARSE_CACHE_DIR:-./vllm-cache/parse}:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  pdf-tools:
+    # Build-only: the throwaway job image that pdf-sandbox-ssh spawns one
+    # container of per SSH session (poppler + imagemagick + curl). Never runs
+    # as a service itself — build with:
+    #   docker --context spark-primary compose --profile build-only build pdf-tools
+    profiles: ["build-only"]
+    build:
+      context: ./pdf-sandbox
+      dockerfile: Dockerfile.tools
+    image: pdf-tools:local
+    command: ["true"]
+
+  pdf-sandbox-ssh:
+    # SSH endpoint for n8n's SSH node (host pdf-sandbox-ssh, port 2222, user
+    # pdfjob, password PDF_SSH_PASSWORD from .env). sshd's ForceCommand runs
+    # each session's command in a fresh `docker run --rm pdf-tools:local`
+    # container, so every job gets a dedicated container that is removed when
+    # it finishes. Needs the docker socket to spawn those siblings; the forced
+    # command is what keeps the SSH credential from being a raw docker key.
+    # No published ports — reachable only on the demo network.
+    build:
+      context: ./pdf-sandbox
+      dockerfile: Dockerfile.ssh
+    image: pdf-sandbox-ssh:local
+    container_name: pdf-sandbox-ssh
+    hostname: pdf-sandbox-ssh
+    networks: ['demo']
+    restart: unless-stopped
+    environment:
+      - PDF_SSH_PASSWORD=${PDF_SSH_PASSWORD}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   litellm:
     # Unlike Switchyard, LiteLLM supports embeddings, so it can genuinely

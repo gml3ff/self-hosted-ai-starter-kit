@@ -1,0 +1,17 @@
+# SearXNG config for the n8n AI assistant's web search.
+#
+# The assistant queries `GET /search?q=...&format=json`; SearXNG rejects
+# `format=json` (403) unless json is listed under search.formats, which is
+# the whole reason this file exists. The secret key comes from the
+# SEARXNG_SECRET env var set in docker-compose, not from this file.
+use_default_settings: true
+
+server:
+  # Internal single-tenant instance on the demo network; the rate limiter
+  # would need a valkey/redis backend and only throttles the assistant.
+  limiter: false
+
+search:
+  formats:
+    - html
+    - json

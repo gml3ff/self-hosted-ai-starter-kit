@@ -1,0 +1,12 @@
+# Throwaway job image for PDF rasterization: one container per SSH session,
+# removed when the command exits (see run-in-sandbox.sh). Debian rather than
+# alpine so the workflow's GNU-isms (base64 -w0) work unchanged.
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        poppler-utils imagemagick curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    pdftoppm -v && mogrify -version | head -1
+
+WORKDIR /tmp

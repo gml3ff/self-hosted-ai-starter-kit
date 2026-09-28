@@ -1,0 +1,18 @@
+# Locked-down sshd for the pdf-sandbox launcher: password login for the one
+# job user, and every session is replaced by the sandbox runner (ForceCommand)
+# regardless of what the client asks for. No shells, no forwarding, no sftp.
+Port 2222
+AddressFamily any
+ListenAddress 0.0.0.0
+
+PermitRootLogin no
+AllowUsers pdfjob
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PubkeyAuthentication no
+PermitEmptyPasswords no
+
+ForceCommand /usr/local/bin/run-in-sandbox.sh
+DisableForwarding yes
+PermitTTY no
+PrintMotd no

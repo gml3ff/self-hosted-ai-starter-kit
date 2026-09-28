@@ -7,10 +7,12 @@
 # To update the node: rebuild the tarball in the n8n-nodes-litellm repo
 # (`npm run build && npm pack`), copy it here, and bump the filename below
 # if the version changed.
-FROM n8nio/n8n:latest
+# Pinned deliberately: an unpinned :latest resolves to whatever was last pulled
+# on the host, which silently left this stack on 2.30.x. Bump explicitly.
+FROM n8nio/n8n:2.40.7
 
 USER root
-COPY n8n-nodes-litellm-0.1.1.tgz /tmp/n8n-nodes-litellm.tgz
+COPY n8n-nodes-litellm-0.1.2.tgz /tmp/n8n-nodes-litellm.tgz
 # --ignore-scripts: n8n-workflow (peer dep) pulls native modules (isolated-vm,
 # ssh2) whose builds need a toolchain this image lacks; they are not used on
 # this node's load path, so skipping their build scripts is safe.

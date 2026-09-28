@@ -1,0 +1,18 @@
+# SSH launcher for ephemeral PDF-processing containers.
+#
+# n8n's SSH node connects here (pdf-sandbox-ssh:2222 on the demo network).
+# sshd's ForceCommand hands every session's command to run-in-sandbox.sh,
+# which runs it in a fresh `docker run --rm pdf-tools:local` container —
+# the "dedicated container that goes away" semantics. The pdfjob user gets
+# no shell, no forwarding, nothing but that forced command.
+FROM alpine:3.20
+
+RUN apk add --no-cache openssh-server docker-cli bash
+
+COPY sshd_config /etc/ssh/sshd_config
+COPY run-in-sandbox.sh /usr/local/bin/run-in-sandbox.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/run-in-sandbox.sh /usr/local/bin/entrypoint.sh
+
+EXPOSE 2222
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

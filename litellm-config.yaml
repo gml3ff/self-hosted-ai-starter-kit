@@ -1,7 +1,7 @@
 model_list:
-  - model_name: nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+  - model_name: nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
     litellm_params:
-      model: openai/nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+      model: openai/nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
       api_base: http://192.168.100.2:9004/v1
       api_key: "not-needed"
 
@@ -15,6 +15,12 @@ model_list:
     litellm_params:
       model: openai/nvidia/Nemotron-3-Embed-8B-BF16
       api_base: http://192.168.100.2:9007/v1
+      api_key: "not-needed"
+
+  - model_name: nvidia/NVIDIA-Nemotron-Parse-v1.2
+    litellm_params:
+      model: openai/nvidia/NVIDIA-Nemotron-Parse-v1.2
+      api_base: http://192.168.100.2:9009/v1
       api_key: "not-needed"
 
 general_settings:
