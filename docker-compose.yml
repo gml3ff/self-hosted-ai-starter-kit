@@ -29,6 +29,15 @@ x-n8n: &service-n8n
     - N8N_PROXY_HOPS=1
     - N8N_LICENSE_TENANT_ID=${N8N_LICENSE_TENANT_ID}
     - N8N_LICENSE_ACTIVATION_KEY=${N8N_LICENSE_ACTIVATION_KEY}
+    - N8N_ENABLED_MODULES=instance-ai
+    - N8N_INSTANCE_AI_MODEL=openai/nvidia/Llama-3.1-Nemotron-Nano-8B-v1
+    - N8N_INSTANCE_AI_MODEL_URL=http://litellm:4000/v1
+    - N8N_INSTANCE_AI_MODEL_API_KEY=${LITELLM_MASTER_KEY}
+    - N8N_INSTANCE_AI_SANDBOX_ENABLED=true
+    - N8N_INSTANCE_AI_SANDBOX_PROVIDER=daytona
+    - N8N_INSTANCE_AI_SANDBOX_IMAGE=daytonaio/sandbox:0.5.3-slim
+    - DAYTONA_API_URL=https://app.daytona.io/api
+    - DAYTONA_API_KEY=${DAYTONA_API_KEY}
   env_file:
     - path: .env
       required: true
