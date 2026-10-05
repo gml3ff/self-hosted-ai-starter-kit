@@ -25,11 +25,28 @@ x-n8n: &service-n8n
     # correct https URLs (webhooks, OAuth callbacks) instead of localhost:5678.
     - N8N_PROTOCOL=https
     - N8N_HOST=spark-primary.tail1a15.ts.net
-    - WEBHOOK_URL=https://spark-primary.tail1a15.ts.net/
+    # Port 8443, not 443: that's the Tailscale Funnel port (public internet),
+    # scoped to /webhook and /rest via `tailscale funnel --set-path=...`. The
+    # editor UI itself stays on port 443, tailnet-only, untouched. Both the
+    # deprecated alias and the real var are set: the Agents module's webhook
+    # URL generation did not appear to honor the deprecated WEBHOOK_URL alone.
+    - WEBHOOK_URL=https://spark-primary.tail1a15.ts.net:8443/
+    - N8N_WEBHOOK_URL=https://spark-primary.tail1a15.ts.net:8443/
     - N8N_PROXY_HOPS=1
     - N8N_LICENSE_TENANT_ID=${N8N_LICENSE_TENANT_ID}
     - N8N_LICENSE_ACTIVATION_KEY=${N8N_LICENSE_ACTIVATION_KEY}
-    - N8N_ENABLED_MODULES=instance-ai
+    # instance-ai = the AI assistant; agents = standalone Agents (agents as a
+    # first-class construct outside workflows; off by default, no license gate).
+    # Agents pick their model from existing LLM credentials via live discovery,
+    # so the LiteLLM Gateway credential feeds their model picker.
+    - N8N_ENABLED_MODULES=instance-ai,agents
+    # Durable background jobs for agents (sub-agents that outlive a turn,
+    # detached workflow-tool tracking). Single-main instance, so safe to enable.
+    - N8N_AGENTS_BACKGROUND_TASKS_ENABLED=true
+    # Agent knowledge-base sandbox — mirrors the instance-ai Daytona setup
+    # below (module reads the same DAYTONA_API_URL/KEY).
+    - N8N_AGENTS_AI_SANDBOX_ENABLED=true
+    - N8N_AGENTS_AI_SANDBOX_IMAGE=daytonaio/sandbox:0.5.3-slim
     # `custom/` pins the OpenAI-compatible chat-completions adapter. The
     # `openai/` provider probes the endpoint and pinned itself to vLLM's
     # /v1/responses, whose immature implementation 500s on tool-call items.
@@ -146,10 +163,11 @@ services:
       - --served-model-name=nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4
       # The repo ships custom loading code (like Nemotron Parse).
       - --trust-remote-code
-      - --gpu-memory-utilization=0.3
-      # Model supports 256k, but KV cache for that would blow the memory
-      # budget shared with the other three models on this box.
-      - --max-model-len=32768
+      - --gpu-memory-utilization=0.35
+      # Model supports 256k; 128k (the model card's own serve example) is
+      # affordable here because the Mamba2-hybrid architecture keeps KV cost
+      # low — and the AI assistant's long sessions overflow smaller windows.
+      - --max-model-len=131072
       # Multi-page documents: vLLM's default is 1 image per prompt.
       - '--limit-mm-per-prompt={"image": 8}'
       # Tool calling + reasoning parsers per the model card (requires
@@ -317,6 +335,19 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
+  vllm-direct:
+    # No-proxy path to vllm-chat for heavy multimodal traffic (agents,
+    # document pipelines) — see vllm-direct/default.conf for why it exists
+    # and why it 404s /v1/responses. Reachable only on the demo network;
+    # the "vLLM Omni Direct" n8n credential points here.
+    image: nginx:alpine
+    container_name: vllm-direct
+    hostname: vllm-direct
+    networks: ['demo']
+    restart: unless-stopped
+    volumes:
+      - ${VLLM_DIRECT_CONF:-./vllm-direct/default.conf}:/etc/nginx/conf.d/default.conf:ro
+
   litellm:
     # Unlike Switchyard, LiteLLM supports embeddings, so it can genuinely
     # front all three vLLM models (chat, embed, and the VLM-based safety
@@ -326,11 +357,21 @@ services:
     container_name: litellm
     networks: ['demo']
     restart: unless-stopped
+    # DB-less LiteLLM accumulates request bookkeeping in RAM; the huge base64
+    # invoice payloads once grew it to 26GB and wedged its event loop (streams
+    # stalled with no bytes for minutes). Cap it so Docker OOM-kills instead —
+    # restart: unless-stopped then brings it back within seconds.
+    mem_limit: 8g
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
     volumes:
       - ${LITELLM_CONFIG_PATH:-./litellm-config.yaml}:/app/config.yaml
     command:
       - --config=/app/config.yaml
+      # A single worker wedges for minutes while parsing/logging the huge
+      # base64 document payloads the invoice/insurance pipelines send —
+      # starving every other stream (assistant, agents) past n8n's 180s
+      # deadline. Extra workers keep light traffic flowing past a heavy one.
+      - --num_workers=3
     ports:
       - 127.0.0.1:9005:4000
